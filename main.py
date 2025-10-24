@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -80,6 +80,13 @@ class RFPReportModel(BaseModel):
     scan_period: str
     timestamp: str
     emails: List[EmailItemModel] = Field(default_factory=list)
+
+
+class RFPReportResponse(RFPReportModel):
+    """Envelope response that preserves existing fields and adds metadata."""
+    success: bool
+    error: Optional[str] = None
+    user_id: str
 
 
 # =====================================
@@ -354,19 +361,41 @@ class MonitorRequest(BaseModel):
     auto_download: bool = Field(default=False)
 
 
-@app.post("/rfp/monitor", response_model=RFPReportModel)
-def monitor_emails(req: MonitorRequest) -> RFPReportModel:
+@app.post("/rfp/monitor", response_model=RFPReportResponse)
+def monitor_emails(req: MonitorRequest) -> RFPReportResponse:
     handler = RFPEmailHandler(user_id=req.user_id)
-    report = handler.run_monitor(hours_back=req.hours_back, max_results=req.max_results)
+    try:
+        report = handler.run_monitor(hours_back=req.hours_back, max_results=req.max_results)
 
-    # Ensure total consistency before returning
-    if report.total_rfp_emails != len(report.emails):
-        report.total_rfp_emails = len(report.emails)
-    if not report.scan_period:
-        report.scan_period = f"{req.hours_back} hours"
-    if not report.timestamp:
-        report.timestamp = datetime.now(timezone.utc).isoformat()
-    return report
+        # Ensure total consistency before returning
+        if report.total_rfp_emails != len(report.emails):
+            report.total_rfp_emails = len(report.emails)
+        if not report.scan_period:
+            report.scan_period = f"{req.hours_back} hours"
+        if not report.timestamp:
+            report.timestamp = datetime.now(timezone.utc).isoformat()
+
+        return RFPReportResponse(
+            **report.model_dump(),
+            success=True,
+            error=None,
+            user_id=req.user_id,
+        )
+    except Exception as exc:  # Return consistent envelope on failure
+        # Convert HTTPException detail to string if present
+        err = exc
+        if isinstance(exc, HTTPException) and exc.detail is not None:
+            err = exc.detail  # may be str or dict
+
+        return RFPReportResponse(
+            total_rfp_emails=0,
+            scan_period=f"{req.hours_back} hours",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            emails=[],
+            success=False,
+            error=str(err),
+            user_id=req.user_id,
+        )
 
 
 # For local debugging: `uvicorn main:app --reload`
