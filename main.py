@@ -155,6 +155,53 @@ def _validate_or_raise(data: Dict[str, Any]) -> RFPReportModel:
         })
 
 
+def _extract_balanced_json_after_marker(text: str, marker: str = "Final Output:") -> Optional[Dict[str, Any]]:
+    """
+    Find the first balanced JSON object following a marker (e.g., "Final Output:").
+    This is robust against nested braces and quoted braces.
+    """
+    start_pos = text.find(marker)
+    if start_pos == -1:
+        start_pos = 0
+    s = text[start_pos:]
+    brace_start = s.find("{")
+    if brace_start == -1:
+        return None
+
+    i = brace_start
+    depth = 0
+    in_string = False
+    escape = False
+    end_index: Optional[int] = None
+
+    for j in range(i, len(s)):
+        ch = s[j]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                end_index = j
+                break
+
+    if end_index is None:
+        return None
+
+    candidate = s[i:end_index + 1]
+    return _json_loads_safely(candidate)
+
+
 # =========================
 # Core Email Handler / Agent
 # =========================
@@ -311,12 +358,20 @@ class RFPEmailHandler:
             maybe_obj = getattr(task, "output", None) or getattr(result, "pydantic", None)
             if isinstance(maybe_obj, RFPReportModel):
                 return maybe_obj
+            # Accept dict or BaseModel-like and validate
+            if isinstance(maybe_obj, dict):
+                return _validate_or_raise(maybe_obj)
+            if isinstance(maybe_obj, BaseModel):  # type: ignore[arg-type]
+                return _validate_or_raise(maybe_obj.model_dump())  # type: ignore[assignment]
         except Exception:
             pass
 
         # Fallback: parse raw output
         raw_text: str = str(result) if not isinstance(result, str) else result
-        parsed = _attempt_basic_json_repairs(raw_text)
+        # Prefer balanced extraction after the common "Final Output:" marker
+        parsed = _extract_balanced_json_after_marker(raw_text)
+        if parsed is None:
+            parsed = _attempt_basic_json_repairs(raw_text)
         if parsed is not None:
             return _validate_or_raise(parsed)
 
