@@ -352,6 +352,14 @@ class RFPEmailHandler:
         crew = Crew(agents=[self.email_agent], tasks=[task], verbose=True)
         result = crew.kickoff()
 
+        # Try to get structured object directly when available
+        if isinstance(result, RFPReportModel):
+            return result
+        if isinstance(result, dict):
+            return _validate_or_raise(result)
+        if isinstance(result, BaseModel):  # type: ignore[arg-type]
+            return _validate_or_raise(result.model_dump())  # type: ignore[assignment]
+
         # Try to get structured object directly from task output when output_pydantic is used
         try:
             # Some CrewAI versions attach parsed pydantic to task.output or result.pydantic
